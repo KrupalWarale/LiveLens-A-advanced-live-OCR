@@ -1,0 +1,10 @@
+{
+  "name": "LiveLens : A advance text scanner",
+  "description": "LiveLens : An advanced real-time text and code scanner using CameraX and ML Kit",
+  "requestFramePermissions": [
+    "android.permission.CAMERA"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
