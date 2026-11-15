@@ -1,4 +1,4 @@
- # LiveLens — Advanced Live Text & Code Scanner
+# LiveLens — Advanced Live Text & Code Scanner
 
 <p align="center">
   <img src="assets/livelens-banner.png" alt="LiveLens Banner" width="100%" />
@@ -20,15 +20,15 @@
 
 ---
 
-## ✨ Overview
+## Overview
 
-**LiveLens** is an Android application designed for real-time text and programming-code extraction using your device's camera.
+**LiveLens** is an Android application for real-time text and programming-code extraction using your device's camera. Point your camera at a laptop, monitor, book, or another phone to recognize visible text directly on your device.
 
-Point your camera at a laptop, monitor, book, or another phone, and LiveLens recognizes visible text directly on your device.
+It also supports **Bulk Image OCR**, allowing users to select multiple images, extract their text and combine the results into a single output.
 
-Built with a modern Android architecture, it combines on-device OCR, CameraX image analysis, and a full-screen floating glass interface.
+Built using Google ML Kit, CameraX and Jetpack Compose, LiveLens combines on-device OCR, intelligent text processing and a full-screen floating glass interface.
 
-## 📸 App Preview
+## App Preview
 
 <p align="center">
   <img src="assets/screenshots/scanner-screen.png" width="31%" alt="Live scanner screen" />
@@ -37,38 +37,36 @@ Built with a modern Android architecture, it combines on-device OCR, CameraX ima
 </p>
 
 <p align="center">
-  <i>Live Scanner · Extracted Code · Saved Snippets</i>
+  <i>Live Scanner · Extracted Text · Saved Snippets</i>
 </p>
 
-> Replace these image paths with your actual screenshots.
-
-## 🚀 Features
+## Features
 
 | Feature | Description |
 |---|---|
-| 🔍 Real-time OCR | Extract text continuously through the camera |
-| 💻 Code Recognition | Capture programming code, symbols and syntax |
-| ⚡ On-device Processing | Google ML Kit text recognition |
-| 🎯 Autofocus | Tap-to-focus and pinch-to-zoom |
-| 🔦 Flash Control | Toggle camera torch instantly |
-| 🪟 Floating Glass UI | Translucent, resizable extraction panel |
-| 📋 Copy | Copy extracted text to clipboard |
-| 💾 Save Snippets | Store extracted content locally |
-| 📤 Share | Share text using Android's native share sheet |
-| 📚 Snippet History | Browse, copy, share and delete saved snippets |
+| Real-time OCR | Continuously extract text through the camera |
+| Code Recognition | Extract programming code, symbols and syntax |
+| Smart Text Stitching | Detect overlapping content and prevent duplicate text while scrolling |
+| Bulk Image OCR | Select multiple images and extract text in batches |
+| Combined Text Output | Merge extracted content from multiple images |
+| Custom Separators | Separate image results using configurable formats |
+| OCR Settings | Configure batch size, processing speed and text cleanup |
+| Autofocus & Zoom | Tap-to-focus, pinch-to-zoom and flashlight controls |
+| Floating Glass UI | Translucent, resizable extraction panel |
+| Saved Snippets | Save, copy, share and manage extracted content |
 
-## 🖥️ Interface Design
+## Interface Design
 
-### 1. Full-screen Scanner
+### 1. Full-Screen Scanner
 
 <p align="center">
   <img src="assets/screenshots/scanner-screen.png" width="75%" alt="LiveLens scanner interface" />
 </p>
 
 - Full-screen camera preview.
-- Floating torch and scanning controls.
+- Floating camera and scanning controls.
 - Tap-to-focus and pinch-to-zoom.
-- No unnecessary toolbars obstructing the camera.
+- Camera-based continuous OCR.
 
 ### 2. Floating Extraction Panel
 
@@ -80,9 +78,48 @@ Built with a modern Android architecture, it combines on-device OCR, CameraX ima
 - Expandable and collapsible panel.
 - Monospace font for programming code.
 - Internal scrolling for longer extracted content.
-- Quick Copy, Save, Share and Snippets actions.
+- Quick Copy, Save, Share and Saved Snippets actions.
 
-### 3. Saved Snippets
+### 3. Bulk Image OCR
+
+Select multiple images from the gallery and extract their text using Google ML Kit.
+
+<p align="center">
+  <img src="assets/screenshots/bulk-image-ocr.png" width="75%" alt="Bulk image OCR interface" />
+</p>
+
+- Multi-image selection.
+- Individual image preview and management.
+- OCR processing with bounded concurrency.
+- Combine extracted text into one editable output.
+- Change separators without running OCR again.
+- Copy the combined result.
+
+**Available output separators:**
+
+| Separator | Output |
+|---|---|
+| New line | Single line break |
+| Empty line | Blank line between images |
+| `___` | Three underscores |
+| `----` | Four dashes |
+| Image numbering | Image 1, Image 2, etc. |
+
+### 4. OCR Settings & Export Customization
+
+<p align="center">
+  <img src="assets/screenshots/ocr-settings.png" width="42%" alt="OCR Settings" />
+  <img src="assets/screenshots/bulk-export-settings.png" width="42%" alt="Bulk Export Settings" />
+</p>
+
+LiveLens provides configurable OCR controls, including:
+
+- Maximum Vote Cleanup.
+- Adjustable OCR batch size.
+- Fast Mode FPS.
+- Document separators between bulk image results.
+
+### 5. Saved Snippets
 
 <p align="center">
   <img src="assets/screenshots/saved-snippets.png" width="75%" alt="LiveLens saved snippets" />
@@ -94,7 +131,7 @@ Built with a modern Android architecture, it combines on-device OCR, CameraX ima
 - One-tap copy and share.
 - Individual deletion and Clear All functionality.
 
-## ⚙️ How It Works
+## How It Works
 
 <p align="center">
   <img src="assets/architecture.png" width="90%" alt="LiveLens system architecture" />
@@ -106,13 +143,18 @@ Built with a modern Android architecture, it combines on-device OCR, CameraX ima
 flowchart TD
     A[Camera Input] --> B[CameraX Image Analysis]
     B --> C[Frame Throttling]
-    C --> D[ImageProxy]
-    D --> E[ML Kit Text Recognition]
-    E --> F[TextBlock Extraction]
-    F --> G[Line and Element Processing]
-    G --> H[Code Formatting and Normalization]
-    H --> I[Jetpack Compose UI]
-    I --> J[Copy / Save / Share]
+    C --> D[ML Kit Text Recognition]
+    D --> E[Visual Line Extraction]
+    E --> F[Normalization and Matching]
+    F --> G[Text Stitching]
+    G --> H[Jetpack Compose UI]
+
+    I[Multiple Gallery Images] --> J[Bulk OCR Processing]
+    J --> D
+    J --> K[Combined Text Output]
+    K --> H
+
+    H --> L[Copy / Save / Share]
 ```
 
 ### Processing Flow
@@ -121,10 +163,12 @@ flowchart TD
 2. **Frame Analysis:** Image analysis processes frames using a keep-only-latest backpressure strategy.
 3. **OCR Recognition:** Google ML Kit detects text directly from camera images.
 4. **Text Processing:** Recognized text is traversed through its block, line and element hierarchy.
-5. **Output Rendering:** Jetpack Compose displays extracted text in a floating panel.
-6. **User Actions:** Extracted content can be copied, saved or shared.
+5. **Text Stitching:** Overlapping content is matched to prevent repeated text during scrolling.
+6. **Bulk Processing:** Selected gallery images are processed independently and their results are combined.
+7. **Output Rendering:** Jetpack Compose displays extracted content.
+8. **User Actions:** Extracted content can be copied, saved or shared.
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 <p align="center">
   <img src="https://skillicons.dev/icons?i=kotlin,androidstudio,gradle" alt="Technology stack" />
@@ -141,15 +185,15 @@ flowchart TD
 | Accompanist Permissions 0.37.3 | Camera permission handling |
 | Gradle Version Catalog | Centralized dependency management |
 
-## ⚡ Performance Optimizations
+## Performance Optimizations
 
-LiveLens includes several optimizations designed to keep camera processing responsive.
+LiveLens includes optimizations designed to keep camera processing responsive and memory usage controlled.
 
 ### CameraX Frame Management
 
-- `STRATEGY_KEEP_ONLY_LATEST` prevents an unnecessary backlog of camera frames.
-- `AtomicBoolean` prevents concurrent OCR processing.
-- A 200 ms frame throttle controls OCR frequency.
+- `STRATEGY_KEEP_ONLY_LATEST` prevents unnecessary frame backlogs.
+- `AtomicBoolean` prevents concurrent live OCR processing.
+- Frame throttling controls OCR frequency.
 - Camera image buffers are released after processing.
 - A reusable ML Kit recognizer avoids repeated initialization.
 
@@ -163,13 +207,22 @@ LiveLens includes several optimizations designed to keep camera processing respo
 ### Code-Oriented Text Processing
 
 - Traverses the ML Kit `TextBlock → Line → Element` hierarchy.
-- Preserves visual reading order.
-- Uses line positioning and indentation information.
-- Includes programming-symbol normalization for common OCR recognition errors.
+- Visual-line clustering and indentation reconstruction.
+- Programming-symbol cleanup for common OCR recognition errors.
+- Tail-anchored sequence matching for overlap detection.
+- Upward camera-jitter suppression.
+- Tentative boundary-line confirmation to handle blurry transitions.
 
-## 🏗️ Project Modernization
+### Bulk OCR Processing
 
-LiveLens was modernized from an older Android project baseline.
+- Bounded concurrent image processing using a semaphore.
+- Maximum of 2 concurrent image-processing workers.
+- Coroutine cancellation when images are removed or cleared.
+- Background persistence operations using `Dispatchers.IO` and `Mutex`.
+
+## Project Modernization
+
+LiveLens was updated from an older Android project baseline to modern Android tooling and APIs.
 
 | Component | Modernization |
 |---|---|
@@ -184,7 +237,7 @@ LiveLens was modernized from an older Android project baseline.
 
 Unused template dependencies, including Room, Retrofit and Firebase-related dependencies, were commented out to simplify the project.
 
-## 📂 Project Structure
+## Project Structure
 
 ```text
 LiveLens/
@@ -216,21 +269,22 @@ LiveLens/
 │   └── screenshots/
 │       ├── scanner-screen.png
 │       ├── extracted-text.png
-│       └── saved-snippets.png
+│       ├── saved-snippets.png
+│       ├── bulk-image-ocr.png
+│       ├── ocr-settings.png
+│       └── bulk-export-settings.png
 │
 ├── build.gradle.kts
 ├── settings.gradle.kts
 └── README.md
 ```
 
-*The package-level structure may vary depending on the current source tree.*
-
-## 🔧 Getting Started
+## Getting Started
 
 ### Prerequisites
 
-- Android Studio (compatible with your configured AGP version).
-- JDK compatible with your Gradle and AGP setup.
+- Android Studio compatible with the configured AGP version.
+- JDK compatible with the Gradle and AGP setup.
 - Android device or emulator with camera support.
 - Android SDK 36.
 
@@ -252,7 +306,7 @@ Allow Android Studio to download and synchronize dependencies.
 
 **4. Run the application**
 
-Connect an Android device, grant camera permission, and run the app.
+Connect an Android device, grant camera permission and run the app.
 
 Alternatively, build from the terminal:
 
@@ -266,9 +320,9 @@ For Windows:
 .\gradlew.bat assembleDebug
 ```
 
-## 📱 Permissions
+## Permissions
 
-LiveLens requires camera access to perform real-time text recognition.
+LiveLens requires camera access for real-time text recognition.
 
 ```xml
 <uses-permission android:name="android.permission.CAMERA" />
@@ -280,18 +334,7 @@ LiveLens requires camera access to perform real-time text recognition.
 
 Camera permission is requested at runtime.
 
-## 🗺️ Future Improvements
-
-Potential areas for further development:
-
-- Improved OCR accuracy for programming symbols.
-- More reliable text overlap detection while scrolling.
-- Adaptive OCR processing based on screen stability.
-- Better preservation of blank lines and code indentation.
-- Bulk image text extraction.
-- Additional language recognition support.
-
-## 👨‍💻 Author
+## Author
 
 **Krupal Warale**
 
@@ -303,10 +346,6 @@ Potential areas for further development:
     <img src="https://img.shields.io/badge/LinkedIn-Connect-0A66C2?logo=linkedin" />
   </a>
 </p>
-
-## 📄 License
-
-Add your preferred open-source license before distributing this project.
 
 ---
 
