@@ -2,6 +2,7 @@ package com.example.ui.bulk
 
 import android.app.Application
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
@@ -23,9 +24,12 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.math.roundToInt
 
 enum class BulkSeparatorOption(
     val key: String,
@@ -65,13 +69,28 @@ enum class BulkSeparatorOption(
     }
 }
 
+data class NormalizedCropRect(
+    val left: Float = 0f,
+    val top: Float = 0f,
+    val right: Float = 1f,
+    val bottom: Float = 1f
+) {
+    val isFullImage: Boolean
+        get() = left <= 0.005f && top <= 0.005f && right >= 0.995f && bottom >= 0.995f
+}
+
 data class BulkImageItem(
     val id: String = UUID.randomUUID().toString(),
     val uri: Uri,
+    val croppedUri: Uri? = null,
+    val cropRect: NormalizedCropRect? = null,
     val extractedText: String? = null,
     val isProcessing: Boolean = false,
     val errorMessage: String? = null
-)
+) {
+    val displayUri: Uri
+        get() = croppedUri ?: uri
+}
 
 data class BulkOcrUiState(
     val items: List<BulkImageItem> = emptyList(),
@@ -196,8 +215,164 @@ class BulkOcrViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun cropAndReExtractImage(itemId: String, cropRect: NormalizedCropRect) {
+        val targetItem = _uiState.value.items.firstOrNull { it.id == itemId } ?: return
+        if (targetItem.isProcessing) return
+
+        val previousCroppedUri = targetItem.croppedUri
+        val threshold = currentSimilarityThreshold()
+
+        _uiState.update { state ->
+            val updatedItems = state.items.map { item ->
+                if (item.id == itemId) {
+                    item.copy(
+                        isProcessing = true,
+                        errorMessage = null,
+                        cropRect = if (cropRect.isFullImage) null else cropRect,
+                        croppedUri = if (cropRect.isFullImage) null else item.croppedUri
+                    )
+                } else {
+                    item
+                }
+            }
+            state.copy(
+                items = updatedItems,
+                isProcessingAny = updatedItems.any { it.isProcessing },
+                combinedDocument = buildCombinedDocument(
+                    items = updatedItems,
+                    separator = state.separatorOption,
+                    isOverlapAppendEnabled = state.isOverlapAppendEnabled,
+                    similarityThreshold = threshold
+                )
+            )
+        }
+
+        if (cropRect.isFullImage) {
+            deleteCachedCropFile(previousCroppedUri)
+            extractTextForItem(itemId = itemId, uri = targetItem.uri)
+            return
+        }
+
+        viewModelScope.launch {
+            var orientedBitmap: Bitmap? = null
+            var croppedBitmap: Bitmap? = null
+            try {
+                val context = getApplication<Application>()
+                val (newCroppedUri, extracted) = withContext(Dispatchers.IO) {
+                    orientedBitmap = loadOrientedBitmap(
+                        context = context,
+                        uri = targetItem.uri,
+                        maxDimension = 2560
+                    )
+                    val source = orientedBitmap ?: throw IllegalStateException("Unable to decode image for cropping")
+
+                    val leftPx = (cropRect.left.coerceIn(0f, 1f) * source.width).roundToInt()
+                        .coerceIn(0, (source.width - 1).coerceAtLeast(0))
+                    val topPx = (cropRect.top.coerceIn(0f, 1f) * source.height).roundToInt()
+                        .coerceIn(0, (source.height - 1).coerceAtLeast(0))
+                    val rightPx = (cropRect.right.coerceIn(0f, 1f) * source.width).roundToInt()
+                        .coerceIn(leftPx + 1, source.width)
+                    val bottomPx = (cropRect.bottom.coerceIn(0f, 1f) * source.height).roundToInt()
+                        .coerceIn(topPx + 1, source.height)
+
+                    croppedBitmap = Bitmap.createBitmap(
+                        source,
+                        leftPx,
+                        topPx,
+                        rightPx - leftPx,
+                        bottomPx - topPx
+                    )
+                    val cropped = croppedBitmap!!
+
+                    val cropFile = File(
+                        context.cacheDir,
+                        "bulk_crop_${itemId}_${System.currentTimeMillis()}.jpg"
+                    )
+                    FileOutputStream(cropFile).use { out ->
+                        cropped.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                    }
+
+                    val inputImage = InputImage.fromBitmap(cropped, 0)
+                    val visionText = processImage(inputImage)
+                    val codeText = CodeTextExtractor.extractCode(visionText)
+                    val resultText = if (codeText.isNotBlank()) codeText else visionText.text.trim()
+                    Uri.fromFile(cropFile) to resultText
+                }
+
+                deleteCachedCropFile(previousCroppedUri)
+                updateCroppedItemResult(
+                    itemId = itemId,
+                    croppedUri = newCroppedUri,
+                    cropRect = cropRect,
+                    text = extracted,
+                    error = null
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to crop and extract text from ${targetItem.uri}", e)
+                updateItemResult(
+                    itemId = itemId,
+                    text = targetItem.extractedText.orEmpty(),
+                    error = e.localizedMessage ?: "Failed to crop image"
+                )
+            } finally {
+                if (croppedBitmap != null && croppedBitmap !== orientedBitmap) {
+                    croppedBitmap?.recycle()
+                }
+                orientedBitmap?.recycle()
+            }
+        }
+    }
+
+    private fun updateCroppedItemResult(
+        itemId: String,
+        croppedUri: Uri,
+        cropRect: NormalizedCropRect,
+        text: String,
+        error: String?
+    ) {
+        val threshold = currentSimilarityThreshold()
+        _uiState.update { state ->
+            val updatedItems = state.items.map { item ->
+                if (item.id == itemId) {
+                    item.copy(
+                        croppedUri = croppedUri,
+                        cropRect = cropRect,
+                        extractedText = text,
+                        isProcessing = false,
+                        errorMessage = error
+                    )
+                } else {
+                    item
+                }
+            }
+            state.copy(
+                items = updatedItems,
+                isProcessingAny = updatedItems.any { it.isProcessing },
+                combinedDocument = buildCombinedDocument(
+                    items = updatedItems,
+                    separator = state.separatorOption,
+                    isOverlapAppendEnabled = state.isOverlapAppendEnabled,
+                    similarityThreshold = threshold
+                )
+            )
+        }
+    }
+
+    private fun deleteCachedCropFile(uri: Uri?) {
+        if (uri == null || uri.scheme != "file") return
+        val path = uri.path ?: return
+        runCatching {
+            val file = File(path)
+            if (file.exists() && file.name.startsWith("bulk_crop_")) {
+                file.delete()
+            }
+        }
+    }
+
     fun removeImage(itemId: String) {
         val threshold = currentSimilarityThreshold()
+        val removedItem = _uiState.value.items.firstOrNull { it.id == itemId }
+        deleteCachedCropFile(removedItem?.croppedUri)
         _uiState.update { state ->
             val updatedItems = state.items.filterNot { it.id == itemId }
             state.copy(
@@ -235,6 +410,7 @@ class BulkOcrViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearAllImages() {
+        _uiState.value.items.forEach { deleteCachedCropFile(it.croppedUri) }
         _uiState.update { state ->
             state.copy(
                 items = emptyList(),
@@ -279,6 +455,7 @@ class BulkOcrViewModel(application: Application) : AndroidViewModel(application)
 
     override fun onCleared() {
         super.onCleared()
+        _uiState.value.items.forEach { deleteCachedCropFile(it.croppedUri) }
         textRecognizer.close()
     }
 

@@ -11,10 +11,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
@@ -40,6 +43,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.BookmarkAdd
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Crop
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Layers
@@ -63,6 +67,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -105,9 +110,10 @@ fun BulkOcrScreen(
 
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
-    var showSettingsDialog by remember { mutableStateOf(false) }
-    var showClearConfirmDialog by remember { mutableStateOf(false) }
-    var previewItemIndex by remember { mutableStateOf<Int?>(null) }
+    var showSettingsDialog by rememberSaveable { mutableStateOf(false) }
+    var showClearConfirmDialog by rememberSaveable { mutableStateOf(false) }
+    var previewItemIndex by rememberSaveable { mutableStateOf<Int?>(null) }
+    var cropTargetItemId by rememberSaveable { mutableStateOf<String?>(null) }
     var isCopied by remember { mutableStateOf(false) }
     var isSaved by remember { mutableStateOf(false) }
 
@@ -214,6 +220,7 @@ fun BulkOcrScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
                     .padding(28.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -316,281 +323,247 @@ fun BulkOcrScreen(
                 }
             }
         } else {
-            // Selected Images Strip + Combined Document Output
-            Column(
+            // Adaptive Portrait (stacked) & Landscape (two-pane) layout so extracted text is always spacious & scrollable
+            BoxWithConstraints(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp)
+                    .fillMaxWidth()
+                    .weight(1f)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "IMAGE ORDER (TAP TO PREVIEW)",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White.copy(alpha = 0.65f),
-                        letterSpacing = 1.sp
-                    )
-
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF2E7D32).copy(alpha = 0.35f))
-                            .border(
-                                width = 1.dp,
-                                color = Color(0xFF00E676).copy(alpha = 0.55f),
-                                shape = RoundedCornerShape(12.dp)
-                            )
-                            .clickable(onClick = launchGalleryPicker)
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                            .testTag("add_more_images_button"),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.AddPhotoAlternate,
-                            contentDescription = "Add more images",
-                            tint = Color(0xFF00E676),
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Add Images",
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                LazyRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("bulk_images_list"),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(end = 4.dp)
-                ) {
-                    itemsIndexed(
-                        items = uiState.items,
-                        key = { _, item -> item.id }
-                    ) { index, item ->
-                        BulkImagePreviewCard(
-                            item = item,
-                            index = index,
-                            totalCount = uiState.items.size,
-                            onPreview = { previewItemIndex = index },
-                            onRemove = { viewModel.removeImage(item.id) },
-                            onMoveLeft = { viewModel.moveImage(index, index - 1) },
-                            onMoveRight = { viewModel.moveImage(index, index + 1) }
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Combined Document Panel
+                val isLandscape = maxWidth > maxHeight && maxWidth >= 520.dp
                 val hasDocumentText = uiState.combinedDocument.isNotBlank()
 
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(bottom = 14.dp)
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(Color(0xFF1C1C20))
-                        .border(
-                            width = 1.dp,
-                            color = Color.White.copy(alpha = 0.14f),
-                            shape = RoundedCornerShape(20.dp)
-                        )
-                        .padding(14.dp)
-                        .testTag("bulk_document_panel")
-                ) {
+                if (isLandscape) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            if (uiState.isProcessingAny) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(12.dp),
-                                    strokeWidth = 2.dp,
-                                    color = Color(0xFF00E676)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                            }
-                            Text(
-                                text = if (uiState.isProcessingAny) "EXTRACTING..." else "COMBINED DOCUMENT",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White.copy(alpha = 0.8f),
-                                letterSpacing = 1.sp
-                            )
-                        }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            BulkActionIcon(
-                                icon = if (isCopied) Icons.Filled.Check else Icons.Outlined.ContentCopy,
-                                contentDescription = "Copy combined document",
-                                isHighlighted = isCopied,
-                                enabled = hasDocumentText,
-                                testTag = "bulk_copy_button",
-                                onClick = {
-                                    clipboardManager.setText(AnnotatedString(uiState.combinedDocument))
-                                    isCopied = true
-                                    coroutineScope.launch {
-                                        delay(1500)
-                                        isCopied = false
-                                    }
-                                }
-                            )
-
-                            BulkActionIcon(
-                                icon = if (isSaved) Icons.Filled.Check else Icons.Outlined.BookmarkAdd,
-                                contentDescription = "Save combined document to list",
-                                isHighlighted = isSaved,
-                                enabled = hasDocumentText,
-                                testTag = "bulk_save_button",
-                                onClick = {
-                                    if (repository.addSnippet(uiState.combinedDocument)) {
-                                        isSaved = true
-                                        coroutineScope.launch {
-                                            delay(1500)
-                                            isSaved = false
-                                        }
-                                    }
-                                }
-                            )
-
-                            BulkActionIcon(
-                                icon = Icons.Outlined.Share,
-                                contentDescription = "Share combined document",
-                                isHighlighted = false,
-                                enabled = hasDocumentText,
-                                testTag = "bulk_share_button",
-                                onClick = {
-                                    shareDocumentText(context, uiState.combinedDocument)
-                                }
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val overlapActive = uiState.isOverlapAppendEnabled
-                        Row(
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    if (overlapActive) Color(0xFF2E7D32).copy(alpha = 0.35f)
-                                    else Color.White.copy(alpha = 0.08f)
-                                )
-                                .border(
-                                    width = 1.dp,
-                                    color = if (overlapActive) Color(0xFF00E676).copy(alpha = 0.65f)
-                                    else Color.White.copy(alpha = 0.16f),
-                                    shape = RoundedCornerShape(10.dp)
-                                )
-                                .clickable { viewModel.toggleOverlapAppend() }
-                                .padding(horizontal = 10.dp, vertical = 8.dp)
-                                .testTag("bulk_result_mode_toggle"),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Layers,
-                                contentDescription = if (overlapActive) {
-                                    "Showing overlap append result. Tap for full result."
-                                } else {
-                                    "Showing full result. Tap for overlap append result."
-                                },
-                                tint = if (overlapActive) Color(0xFF00E676) else Color.White.copy(alpha = 0.8f),
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (overlapActive) "Overlap Append" else "Full Result",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color.White,
-                                maxLines = 1
-                            )
-                        }
-
-                        Row(
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(Color.White.copy(alpha = 0.08f))
-                                .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
-                                .clickable { showSettingsDialog = true }
-                                .padding(horizontal = 10.dp, vertical = 8.dp)
-                                .testTag("bulk_separator_pill"),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Tune,
-                                contentDescription = null,
-                                tint = Color(0xFF00E676),
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text(
-                                text = uiState.separatorOption.label,
-                                fontSize = 11.sp,
-                                color = Color.White.copy(alpha = 0.8f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF0F0F12))
-                            .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
-                            .padding(12.dp)
-                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        val displayText = when {
-                            hasDocumentText -> uiState.combinedDocument
-                            uiState.isProcessingAny -> "Running Google ML Kit text extraction..."
-                            else -> "No readable text detected in the selected images."
+                        Column(
+                            modifier = Modifier
+                                .weight(0.36f)
+                                .fillMaxHeight()
+                                .padding(bottom = 14.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "IMAGE ORDER",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White.copy(alpha = 0.65f),
+                                    letterSpacing = 1.sp
+                                )
+
+                                Row(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color(0xFF2E7D32).copy(alpha = 0.35f))
+                                        .border(
+                                            width = 1.dp,
+                                            color = Color(0xFF00E676).copy(alpha = 0.55f),
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                        .clickable(onClick = launchGalleryPicker)
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                        .testTag("add_more_images_button"),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.AddPhotoAlternate,
+                                        contentDescription = "Add more images",
+                                        tint = Color(0xFF00E676),
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = "Add",
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .testTag("bulk_images_list"),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                contentPadding = PaddingValues(bottom = 4.dp)
+                            ) {
+                                itemsIndexed(
+                                    items = uiState.items,
+                                    key = { _, item -> item.id }
+                                ) { index, item ->
+                                    BulkImagePreviewCard(
+                                        item = item,
+                                        index = index,
+                                        totalCount = uiState.items.size,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(150.dp),
+                                        onPreview = { previewItemIndex = index },
+                                        onCrop = { cropTargetItemId = item.id },
+                                        onRemove = { viewModel.removeImage(item.id) },
+                                        onMoveLeft = { viewModel.moveImage(index, index - 1) },
+                                        onMoveRight = { viewModel.moveImage(index, index + 1) }
+                                    )
+                                }
+                            }
                         }
 
-                        Text(
-                            text = displayText,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 13.sp,
-                            lineHeight = 18.sp,
-                            color = if (hasDocumentText) {
-                                Color.White.copy(alpha = 0.95f)
-                            } else {
-                                Color.White.copy(alpha = 0.5f)
+                        CombinedDocumentPanel(
+                            modifier = Modifier
+                                .weight(0.64f)
+                                .fillMaxHeight()
+                                .padding(bottom = 14.dp),
+                            uiState = uiState,
+                            hasDocumentText = hasDocumentText,
+                            isCopied = isCopied,
+                            isSaved = isSaved,
+                            onToggleResultMode = { viewModel.toggleOverlapAppend() },
+                            onOpenSettings = { showSettingsDialog = true },
+                            onCopy = {
+                                clipboardManager.setText(AnnotatedString(uiState.combinedDocument))
+                                isCopied = true
+                                coroutineScope.launch {
+                                    delay(1500)
+                                    isCopied = false
+                                }
                             },
+                            onSave = {
+                                if (repository.addSnippet(uiState.combinedDocument)) {
+                                    isSaved = true
+                                    coroutineScope.launch {
+                                        delay(1500)
+                                        isSaved = false
+                                    }
+                                }
+                            },
+                            onShare = {
+                                shareDocumentText(context, uiState.combinedDocument)
+                            }
+                        )
+                    }
+                } else {
+                    val cardHeight = if (maxHeight < 480.dp) 124.dp else 172.dp
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "IMAGE ORDER (TAP TO PREVIEW)",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White.copy(alpha = 0.65f),
+                                letterSpacing = 1.sp
+                            )
+
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color(0xFF2E7D32).copy(alpha = 0.35f))
+                                    .border(
+                                        width = 1.dp,
+                                        color = Color(0xFF00E676).copy(alpha = 0.55f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .clickable(onClick = launchGalleryPicker)
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                                    .testTag("add_more_images_button"),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.AddPhotoAlternate,
+                                    contentDescription = "Add more images",
+                                    tint = Color(0xFF00E676),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Add Images",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        LazyRow(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .testTag("bulk_combined_text")
+                                .testTag("bulk_images_list"),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            contentPadding = PaddingValues(end = 4.dp)
+                        ) {
+                            itemsIndexed(
+                                items = uiState.items,
+                                key = { _, item -> item.id }
+                            ) { index, item ->
+                                BulkImagePreviewCard(
+                                    item = item,
+                                    index = index,
+                                    totalCount = uiState.items.size,
+                                    modifier = Modifier
+                                        .width(138.dp)
+                                        .height(cardHeight),
+                                    onPreview = { previewItemIndex = index },
+                                    onCrop = { cropTargetItemId = item.id },
+                                    onRemove = { viewModel.removeImage(item.id) },
+                                    onMoveLeft = { viewModel.moveImage(index, index - 1) },
+                                    onMoveRight = { viewModel.moveImage(index, index + 1) }
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        CombinedDocumentPanel(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(bottom = 14.dp),
+                            uiState = uiState,
+                            hasDocumentText = hasDocumentText,
+                            isCopied = isCopied,
+                            isSaved = isSaved,
+                            onToggleResultMode = { viewModel.toggleOverlapAppend() },
+                            onOpenSettings = { showSettingsDialog = true },
+                            onCopy = {
+                                clipboardManager.setText(AnnotatedString(uiState.combinedDocument))
+                                isCopied = true
+                                coroutineScope.launch {
+                                    delay(1500)
+                                    isCopied = false
+                                }
+                            },
+                            onSave = {
+                                if (repository.addSnippet(uiState.combinedDocument)) {
+                                    isSaved = true
+                                    coroutineScope.launch {
+                                        delay(1500)
+                                        isSaved = false
+                                    }
+                                }
+                            },
+                            onShare = {
+                                shareDocumentText(context, uiState.combinedDocument)
+                            }
                         )
                     }
                 }
@@ -616,7 +589,26 @@ fun BulkOcrScreen(
         ImagePreviewDialog(
             item = previewItem,
             imageNumber = activePreviewIdx + 1,
+            onCrop = {
+                previewItemIndex = null
+                cropTargetItemId = previewItem.id
+            },
             onDismiss = { previewItemIndex = null }
+        )
+    }
+
+    // Post-process Image Crop Dialog
+    val activeCropItem = cropTargetItemId?.let { targetId ->
+        uiState.items.firstOrNull { it.id == targetId }
+    }
+    if (activeCropItem != null && !activeCropItem.isProcessing) {
+        BulkImageCropDialog(
+            item = activeCropItem,
+            onApplyCrop = { cropRect ->
+                viewModel.cropAndReExtractImage(activeCropItem.id, cropRect)
+                cropTargetItemId = null
+            },
+            onDismiss = { cropTargetItemId = null }
         )
     }
 
@@ -649,19 +641,218 @@ fun BulkOcrScreen(
 }
 
 @Composable
+private fun CombinedDocumentPanel(
+    modifier: Modifier,
+    uiState: BulkOcrUiState,
+    hasDocumentText: Boolean,
+    isCopied: Boolean,
+    isSaved: Boolean,
+    onToggleResultMode: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onCopy: () -> Unit,
+    onSave: () -> Unit,
+    onShare: () -> Unit
+) {
+    val documentScrollState = rememberScrollState()
+
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xFF1C1C20))
+            .border(
+                width = 1.dp,
+                color = Color.White.copy(alpha = 0.14f),
+                shape = RoundedCornerShape(20.dp)
+            )
+            .padding(14.dp)
+            .testTag("bulk_document_panel")
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                if (uiState.isProcessingAny) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 2.dp,
+                        color = Color(0xFF00E676)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+                Text(
+                    text = if (uiState.isProcessingAny) "EXTRACTING..." else "COMBINED DOCUMENT",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White.copy(alpha = 0.8f),
+                    letterSpacing = 1.sp
+                )
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                BulkActionIcon(
+                    icon = if (isCopied) Icons.Filled.Check else Icons.Outlined.ContentCopy,
+                    contentDescription = "Copy combined document",
+                    isHighlighted = isCopied,
+                    enabled = hasDocumentText,
+                    testTag = "bulk_copy_button",
+                    onClick = onCopy
+                )
+
+                BulkActionIcon(
+                    icon = if (isSaved) Icons.Filled.Check else Icons.Outlined.BookmarkAdd,
+                    contentDescription = "Save combined document to list",
+                    isHighlighted = isSaved,
+                    enabled = hasDocumentText,
+                    testTag = "bulk_save_button",
+                    onClick = onSave
+                )
+
+                BulkActionIcon(
+                    icon = Icons.Outlined.Share,
+                    contentDescription = "Share combined document",
+                    isHighlighted = false,
+                    enabled = hasDocumentText,
+                    testTag = "bulk_share_button",
+                    onClick = onShare
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val overlapActive = uiState.isOverlapAppendEnabled
+            Row(
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (overlapActive) Color(0xFF2E7D32).copy(alpha = 0.35f)
+                        else Color.White.copy(alpha = 0.08f)
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = if (overlapActive) Color(0xFF00E676).copy(alpha = 0.65f)
+                        else Color.White.copy(alpha = 0.16f),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                    .clickable(onClick = onToggleResultMode)
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                    .testTag("bulk_result_mode_toggle"),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Layers,
+                    contentDescription = if (overlapActive) {
+                        "Showing overlap append result. Tap for full result."
+                    } else {
+                        "Showing full result. Tap for overlap append result."
+                    },
+                    tint = if (overlapActive) Color(0xFF00E676) else Color.White.copy(alpha = 0.8f),
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (overlapActive) "Overlap Append" else "Full Result",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                    maxLines = 1
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.White.copy(alpha = 0.08f))
+                    .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                    .clickable(onClick = onOpenSettings)
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                    .testTag("bulk_separator_pill"),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Tune,
+                    contentDescription = null,
+                    tint = Color(0xFF00E676),
+                    modifier = Modifier.size(13.dp)
+                )
+                Spacer(modifier = Modifier.width(5.dp))
+                Text(
+                    text = uiState.separatorOption.label,
+                    fontSize = 11.sp,
+                    color = Color.White.copy(alpha = 0.8f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFF0F0F12))
+                .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+                .padding(12.dp)
+                .verticalScroll(documentScrollState)
+        ) {
+            val displayText = when {
+                hasDocumentText -> uiState.combinedDocument
+                uiState.isProcessingAny -> "Running Google ML Kit text extraction..."
+                else -> "No readable text detected in the selected images."
+            }
+
+            Text(
+                text = displayText,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 13.sp,
+                lineHeight = 18.sp,
+                color = if (hasDocumentText) {
+                    Color.White.copy(alpha = 0.95f)
+                } else {
+                    Color.White.copy(alpha = 0.5f)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("bulk_combined_text")
+            )
+        }
+    }
+}
+
+@Composable
 private fun BulkImagePreviewCard(
     item: BulkImageItem,
     index: Int,
     totalCount: Int,
+    modifier: Modifier = Modifier
+        .width(138.dp)
+        .height(172.dp),
     onPreview: () -> Unit,
+    onCrop: () -> Unit,
     onRemove: () -> Unit,
     onMoveLeft: () -> Unit,
     onMoveRight: () -> Unit
 ) {
     Box(
-        modifier = Modifier
-            .width(138.dp)
-            .height(172.dp)
+        modifier = modifier
             .clip(RoundedCornerShape(16.dp))
             .background(Color(0xFF1C1C20))
             .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(16.dp))
@@ -669,7 +860,7 @@ private fun BulkImagePreviewCard(
             .testTag("bulk_image_card_$index")
     ) {
         AsyncImage(
-            model = item.uri,
+            model = item.displayUri,
             contentDescription = "Selected image ${index + 1}",
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
@@ -693,25 +884,59 @@ private fun BulkImagePreviewCard(
             )
         }
 
-        // Top-right Remove Button
-        Box(
+        // Top-right Post-process Crop & Remove Buttons
+        Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(6.dp)
-                .size(32.dp)
-                .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.75f))
-                .border(1.dp, Color.White.copy(alpha = 0.22f), CircleShape)
-                .clickable(onClick = onRemove)
-                .testTag("remove_image_$index"),
-            contentAlignment = Alignment.Center
+                .padding(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = Icons.Filled.Close,
-                contentDescription = "Remove image ${index + 1}",
-                tint = Color(0xFFFF5252),
-                modifier = Modifier.size(16.dp)
-            )
+            if (!item.isProcessing) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.75f))
+                        .border(
+                            width = 1.dp,
+                            color = if (item.cropRect != null) {
+                                Color(0xFF00E676).copy(alpha = 0.7f)
+                            } else {
+                                Color.White.copy(alpha = 0.22f)
+                            },
+                            shape = CircleShape
+                        )
+                        .clickable(onClick = onCrop)
+                        .testTag("crop_image_$index"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Crop,
+                        contentDescription = "Crop image ${index + 1}",
+                        tint = if (item.cropRect != null) Color(0xFF00E676) else Color.White,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.75f))
+                    .border(1.dp, Color.White.copy(alpha = 0.22f), CircleShape)
+                    .clickable(onClick = onRemove)
+                    .testTag("remove_image_$index"),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "Remove image ${index + 1}",
+                    tint = Color(0xFFFF5252),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
         }
 
         // Bottom Reorder & Status Bar
@@ -912,6 +1137,7 @@ private fun BulkExportSettingsDialog(
 private fun ImagePreviewDialog(
     item: BulkImageItem,
     imageNumber: Int,
+    onCrop: () -> Unit,
     onDismiss: () -> Unit
 ) {
     Dialog(onDismissRequest = onDismiss) {
@@ -921,6 +1147,7 @@ private fun ImagePreviewDialog(
                 .clip(RoundedCornerShape(22.dp))
                 .background(Color(0xFF18181C))
                 .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(22.dp))
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp)
         ) {
             Row(
@@ -932,24 +1159,61 @@ private fun ImagePreviewDialog(
                     text = "Image $imageNumber Preview",
                     color = Color.White,
                     fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
                 )
-                IconButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.size(36.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Close,
-                        contentDescription = "Close preview",
-                        tint = Color.White.copy(alpha = 0.8f)
-                    )
+                    if (!item.isProcessing) {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFF2E7D32).copy(alpha = 0.35f))
+                                .border(
+                                    width = 1.dp,
+                                    color = Color(0xFF00E676).copy(alpha = 0.55f),
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                                .clickable(onClick = onCrop)
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .testTag("preview_crop_button"),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Crop,
+                                contentDescription = "Crop image $imageNumber",
+                                tint = Color(0xFF00E676),
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Crop",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Close preview",
+                            tint = Color.White.copy(alpha = 0.8f)
+                        )
+                    }
                 }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
 
             AsyncImage(
-                model = item.uri,
+                model = item.displayUri,
                 contentDescription = "Full preview of image $imageNumber",
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
