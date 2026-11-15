@@ -237,47 +237,6 @@ LiveLens was updated from an older Android project baseline to modern Android to
 
 Unused template dependencies, including Room, Retrofit and Firebase-related dependencies, were commented out to simplify the project.
 
-## Project Structure
-
-```text
-LiveLens/
-│
-├── app/
-│   └── src/
-│       └── main/
-│           ├── java/
-│           │   └── ...
-│           │       ├── MainActivity.kt
-│           │       ├── CameraScreen.kt
-│           │       ├── MainScreen.kt
-│           │       ├── TextRecognitionAnalyzer.kt
-│           │       └── NoPermissionScreen.kt
-│           │
-│           ├── res/
-│           │   ├── drawable/
-│           │   ├── mipmap/
-│           │   └── values/
-│           │
-│           └── AndroidManifest.xml
-│
-├── gradle/
-│   └── libs.versions.toml
-│
-├── assets/
-│   ├── livelens-banner.png
-│   ├── architecture.png
-│   └── screenshots/
-│       ├── scanner-screen.png
-│       ├── extracted-text.png
-│       ├── saved-snippets.png
-│       ├── bulk-image-ocr.png
-│       ├── ocr-settings.png
-│       └── bulk-export-settings.png
-│
-├── build.gradle.kts
-├── settings.gradle.kts
-└── README.md
-```
 
 ## Getting Started
 
@@ -293,7 +252,7 @@ LiveLens/
 **1. Clone the repository**
 
 ```bash
-git clone https://github.com/KrupalWarale/LiveLens.git
+git clone https://github.com/KrupalWarale/LiveLens-A-advanced-live-OCR.git
 ```
 
 **2. Open the project**
