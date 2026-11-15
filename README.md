@@ -133,11 +133,9 @@ LiveLens provides configurable OCR controls, including:
 
 ## How It Works
 
-<p align="center">
-  <img src="assets/architecture.png" width="90%" alt="LiveLens system architecture" />
-</p>
+<img width="1672" height="941" alt="image" src="https://github.com/user-attachments/assets/f50d1bd8-eca8-4354-9ca3-8e67ed689bbc" />
 
-![Uploading image.png…]()
+
 
 
 ### Processing Flow
