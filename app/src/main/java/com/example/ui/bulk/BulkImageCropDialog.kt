@@ -3,9 +3,12 @@ package com.example.ui.bulk
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
+import android.os.Build
+import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -66,11 +69,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import coil.decode.DataSource
+import coil.imageLoader
+import coil.request.ImageRequest
+import coil.request.SuccessResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 private enum class CropDragHandle {
     NONE,
@@ -452,24 +461,72 @@ private fun detectCropHandle(
     return CropDragHandle.NONE
 }
 
-fun loadOrientedBitmap(context: Context, uri: Uri, maxDimension: Int): Bitmap? {
+suspend fun loadOrientedBitmap(context: Context, uri: Uri, maxDimension: Int): Bitmap? {
+    // 1. Modern Android (API 28+): ImageDecoder handles Photo Picker URIs, HEIC/WebP, and EXIF rotation in one pass
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        val decoded = runCatching {
+            val source = if (uri.scheme == "file" && !uri.path.isNullOrBlank()) {
+                ImageDecoder.createSource(File(uri.path!!))
+            } else {
+                ImageDecoder.createSource(context.contentResolver, uri)
+            }
+            ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                val width = info.size.width
+                val height = info.size.height
+                val largestSide = max(width, height)
+                if (largestSide > maxDimension && width > 0 && height > 0) {
+                    val scale = maxDimension.toFloat() / largestSide.toFloat()
+                    val targetW = (width * scale).roundToInt().coerceAtLeast(1)
+                    val targetH = (height * scale).roundToInt().coerceAtLeast(1)
+                    decoder.setTargetSize(targetW, targetH)
+                }
+            }
+        }.getOrNull()
+        if (decoded != null) return decoded
+    }
+
+    // 2. Fallback for older Android versions or URIs unsupported by ImageDecoder
+    val fallbackBitmap = runCatching {
+        loadWithBitmapFactoryAndExif(context, uri, maxDimension)
+    }.getOrNull()
+    if (fallbackBitmap != null) return fallbackBitmap
+
+    // 3. Final fallback using Coil's ImageLoader (already verified to render these URIs)
+    return runCatching {
+        val request = ImageRequest.Builder(context)
+            .data(uri)
+            .size(maxDimension)
+            .allowHardware(false)
+            .build()
+        val result = context.imageLoader.execute(request) as? SuccessResult ?: return@runCatching null
+        val bitmap = result.drawable.toBitmap()
+        if (result.dataSource == DataSource.MEMORY_CACHE || result.dataSource == DataSource.MEMORY) {
+            bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        } else {
+            bitmap
+        }
+    }.getOrNull()
+}
+
+private fun loadWithBitmapFactoryAndExif(context: Context, uri: Uri, maxDimension: Int): Bitmap? {
     val resolver = context.contentResolver
 
-    val orientation = try {
+    val orientation = runCatching {
         resolver.openInputStream(uri)?.use { stream ->
             ExifInterface(stream).getAttributeInt(
                 ExifInterface.TAG_ORIENTATION,
                 ExifInterface.ORIENTATION_NORMAL
             )
-        } ?: ExifInterface.ORIENTATION_NORMAL
-    } catch (_: Exception) {
-        ExifInterface.ORIENTATION_NORMAL
-    }
+        }
+    }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
 
     val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    resolver.openInputStream(uri)?.use { stream ->
+    val openedForBounds = resolver.openInputStream(uri)?.use { stream ->
         BitmapFactory.decodeStream(stream, null, boundsOptions)
-    } ?: return null
+        true
+    } ?: false
+    if (!openedForBounds) return null
 
     val rawW = boundsOptions.outWidth
     val rawH = boundsOptions.outHeight
