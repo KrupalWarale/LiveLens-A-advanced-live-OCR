@@ -137,25 +137,8 @@ LiveLens provides configurable OCR controls, including:
   <img src="assets/architecture.png" width="90%" alt="LiveLens system architecture" />
 </p>
 
-### OCR Processing Pipeline
+![Uploading image.png…]()
 
-```mermaid
-flowchart TD
-    A[Camera Input] --> B[CameraX Image Analysis]
-    B --> C[Frame Throttling]
-    C --> D[ML Kit Text Recognition]
-    D --> E[Visual Line Extraction]
-    E --> F[Normalization and Matching]
-    F --> G[Text Stitching]
-    G --> H[Jetpack Compose UI]
-
-    I[Multiple Gallery Images] --> J[Bulk OCR Processing]
-    J --> D
-    J --> K[Combined Text Output]
-    K --> H
-
-    H --> L[Copy / Save / Share]
-```
 
 ### Processing Flow
 
