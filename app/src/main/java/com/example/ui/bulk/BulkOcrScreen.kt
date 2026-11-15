@@ -132,13 +132,14 @@ fun BulkOcrScreen(
         )
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFF101012))
-            .statusBarsPadding()
-            .navigationBarsPadding()
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF101012))
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
         // Top App Bar
         Row(
             modifier = Modifier
@@ -637,6 +638,7 @@ fun BulkOcrScreen(
                 }
             }
         )
+    }
     }
 }
 
