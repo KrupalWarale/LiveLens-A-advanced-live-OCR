@@ -36,8 +36,6 @@ class TextRecognitionAnalyzer(
     private val textRecognizer: TextRecognizer =
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
-    fun isTaskInFlight(): Boolean = isProcessing.get()
-
     fun resetSession() {
         completedInCurrentBatch = 0
         appendedInCurrentBatch = 0

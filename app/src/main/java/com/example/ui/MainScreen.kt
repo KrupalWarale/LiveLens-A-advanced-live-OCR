@@ -5,7 +5,7 @@ package com.example.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import com.example.ui.bulk.BulkOcrScreen
 import com.example.ui.camera.CameraScreen
@@ -38,7 +38,7 @@ private fun MainContent(
     hasPermission: Boolean,
     onRequestPermission: () -> Unit
 ) {
-    var currentDestination by remember { mutableStateOf(MainDestination.CAMERA) }
+    var currentDestination by rememberSaveable { mutableStateOf(MainDestination.CAMERA) }
 
     if (hasPermission) {
         when (currentDestination) {

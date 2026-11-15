@@ -8,7 +8,8 @@ data class OcrSettings(
     val fastModeFps: Int = DEFAULT_FAST_MODE_FPS,
     val slowModeFps: Float = DEFAULT_SLOW_MODE_FPS,
     val fuzzyMatchPercent: Int = DEFAULT_FUZZY_MATCH_PERCENT,
-    val stationaryThreshold: Int = DEFAULT_STATIONARY_THRESHOLD
+    val stationaryThreshold: Int = DEFAULT_STATIONARY_THRESHOLD,
+    val maxVoteEnabled: Boolean = DEFAULT_MAX_VOTE_ENABLED
 ) {
     val normalIntervalMs: Long
         get() = (1000.0 / fastModeFps.coerceIn(MIN_FAST_FPS, MAX_FAST_FPS)).roundToLong().coerceAtLeast(50L)
@@ -39,6 +40,8 @@ data class OcrSettings(
         const val DEFAULT_STATIONARY_THRESHOLD = 10
         const val MIN_STATIONARY_THRESHOLD = 3
         const val MAX_STATIONARY_THRESHOLD = 30
+
+        const val DEFAULT_MAX_VOTE_ENABLED = true
     }
 }
 
@@ -56,7 +59,8 @@ class OcrSettingsStore(context: Context) {
             fuzzyMatchPercent = prefs.getInt(KEY_FUZZY_PERCENT, OcrSettings.DEFAULT_FUZZY_MATCH_PERCENT)
                 .coerceIn(OcrSettings.MIN_FUZZY_PERCENT, OcrSettings.MAX_FUZZY_PERCENT),
             stationaryThreshold = prefs.getInt(KEY_STATIONARY_THRESHOLD, OcrSettings.DEFAULT_STATIONARY_THRESHOLD)
-                .coerceIn(OcrSettings.MIN_STATIONARY_THRESHOLD, OcrSettings.MAX_STATIONARY_THRESHOLD)
+                .coerceIn(OcrSettings.MIN_STATIONARY_THRESHOLD, OcrSettings.MAX_STATIONARY_THRESHOLD),
+            maxVoteEnabled = prefs.getBoolean(KEY_MAX_VOTE_ENABLED, OcrSettings.DEFAULT_MAX_VOTE_ENABLED)
         )
     }
 
@@ -67,6 +71,7 @@ class OcrSettingsStore(context: Context) {
             .putFloat(KEY_SLOW_FPS, settings.slowModeFps)
             .putInt(KEY_FUZZY_PERCENT, settings.fuzzyMatchPercent)
             .putInt(KEY_STATIONARY_THRESHOLD, settings.stationaryThreshold)
+            .putBoolean(KEY_MAX_VOTE_ENABLED, settings.maxVoteEnabled)
             .apply()
     }
 
@@ -77,5 +82,6 @@ class OcrSettingsStore(context: Context) {
         private const val KEY_SLOW_FPS = "slow_mode_fps"
         private const val KEY_FUZZY_PERCENT = "fuzzy_match_percent"
         private const val KEY_STATIONARY_THRESHOLD = "stationary_threshold"
+        private const val KEY_MAX_VOTE_ENABLED = "max_vote_enabled"
     }
 }

@@ -36,47 +36,64 @@ private data class AppendHistoryEntry(
     val previousFrameRowsBeforeAppend: List<OcrRow>
 )
 
+private class RowVoteBucket(initialText: String) {
+    private val counts = LinkedHashMap<String, Int>(4)
+    var winnerText: String = initialText
+        private set
+    private var winnerVotes: Int = 1
+
+    init {
+        counts[initialText] = 1
+    }
+
+    fun castVote(candidateText: String): String {
+        val updated = (counts[candidateText] ?: 0) + 1
+        counts[candidateText] = updated
+        if (updated > winnerVotes) {
+            winnerVotes = updated
+            winnerText = candidateText
+        }
+        return winnerText
+    }
+}
+
 /**
  * Continuous downward-scrolling OCR engine with backend-only normalization,
  * fuzzy full-frame suffix-prefix overlap detection, row-boundary preservation,
- * multi-step undo for appended chunks, and adaptive speed detection.
+ * multi-step undo for appended chunks, adaptive speed detection, and an optional
+ * real-time Max Vote algorithm for text consensus and duplicate-line cleanup.
  */
 class ContinuousOcrEngine(
     initialSettings: OcrSettings = OcrSettings()
 ) {
-    constructor(
-        similarityThreshold: Double = OcrSettings.DEFAULT_FUZZY_MATCH_PERCENT / 100.0,
-        stationaryThreshold: Int = OcrSettings.DEFAULT_STATIONARY_THRESHOLD
-    ) : this(
-        OcrSettings(
-            fuzzyMatchPercent = (similarityThreshold * 100).toInt(),
-            stationaryThreshold = stationaryThreshold
-        )
-    )
+    private val lock = Any()
 
     @Volatile
     var settings: OcrSettings = initialSettings
         private set
 
     private val accumulatedRows = ArrayList<OcrRow>()
+    private val rowVotes = ArrayList<RowVoteBucket>()
     private val appendHistory = ArrayDeque<AppendHistoryEntry>()
     private var previousFrameRows: List<OcrRow> = emptyList()
     private var lastNormalizedFrameText: String? = null
 
+    @Volatile
     var speedMode: OcrSpeedMode = OcrSpeedMode.NORMAL
         private set
 
+    @Volatile
     var stabilityCounter: Int = 0
         private set
 
-    fun canUndo(): Boolean = appendHistory.isNotEmpty()
-
     fun updateSettings(newSettings: OcrSettings) {
-        settings = newSettings
-        if (stabilityCounter >= newSettings.stationaryThreshold) {
-            speedMode = OcrSpeedMode.SLOW
-        } else if (speedMode == OcrSpeedMode.SLOW) {
-            speedMode = OcrSpeedMode.NORMAL
+        synchronized(lock) {
+            settings = newSettings
+            if (stabilityCounter >= newSettings.stationaryThreshold) {
+                speedMode = OcrSpeedMode.SLOW
+            } else if (speedMode == OcrSpeedMode.SLOW) {
+                speedMode = OcrSpeedMode.NORMAL
+            }
         }
     }
 
@@ -89,25 +106,31 @@ class ContinuousOcrEngine(
     }
 
     fun reset() {
-        accumulatedRows.clear()
-        appendHistory.clear()
-        previousFrameRows = emptyList()
-        lastNormalizedFrameText = null
-        speedMode = OcrSpeedMode.NORMAL
-        stabilityCounter = 0
+        synchronized(lock) {
+            accumulatedRows.clear()
+            rowVotes.clear()
+            appendHistory.clear()
+            previousFrameRows = emptyList()
+            lastNormalizedFrameText = null
+            speedMode = OcrSpeedMode.NORMAL
+            stabilityCounter = 0
+        }
     }
 
     /**
      * Removes the most recently appended chunk of rows, restoring the prior frame reference
      * so repeated undo taps cleanly step backward through every append operation.
      */
-    fun undoLastAppend(): OcrObservationResult {
+    fun undoLastAppend(): OcrObservationResult = synchronized(lock) {
         val lastEntry = appendHistory.removeLastOrNull()
         if (lastEntry != null) {
             val removeCount = lastEntry.appendedCount.coerceAtMost(accumulatedRows.size)
             repeat(removeCount) {
                 if (accumulatedRows.isNotEmpty()) {
                     accumulatedRows.removeAt(accumulatedRows.size - 1)
+                }
+                if (rowVotes.isNotEmpty()) {
+                    rowVotes.removeAt(rowVotes.size - 1)
                 }
             }
             previousFrameRows = lastEntry.previousFrameRowsBeforeAppend
@@ -119,7 +142,7 @@ class ContinuousOcrEngine(
             stabilityCounter = 0
             speedMode = OcrSpeedMode.NORMAL
         }
-        return OcrObservationResult(
+        OcrObservationResult(
             accumulatedText = buildOriginalOutput(accumulatedRows),
             appendedRowCount = 0,
             overlapRowCount = 0,
@@ -138,39 +161,24 @@ class ContinuousOcrEngine(
     }
 
     /**
-     * Processes a batch of ordered observations sequentially and returns the aggregated result.
-     */
-    fun processBatch(batch: List<List<OcrRow>>): OcrObservationResult {
-        var totalAppended = 0
-        var totalOverlap = 0
-        var latestResult = OcrObservationResult(
-            accumulatedText = buildOriginalOutput(accumulatedRows),
-            appendedRowCount = 0,
-            overlapRowCount = 0,
-            speedMode = speedMode,
-            stabilityCounter = stabilityCounter,
-            canUndo = appendHistory.isNotEmpty()
-        )
-        for (frameRows in batch) {
-            latestResult = processRows(frameRows)
-            totalAppended += latestResult.appendedRowCount
-            totalOverlap += latestResult.overlapRowCount
-        }
-        return latestResult.copy(
-            appendedRowCount = totalAppended,
-            overlapRowCount = totalOverlap
-        )
-    }
-
-    /**
      * Processes an ordered list of extracted [OcrRow]s from a single observation.
      */
-    fun processRows(currentRows: List<OcrRow>): OcrObservationResult {
+    fun processRows(currentRows: List<OcrRow>): OcrObservationResult = synchronized(lock) {
+        processRowsLocked(currentRows)
+    }
+
+    private fun processRowsLocked(currentRows: List<OcrRow>): OcrObservationResult {
         val activeSettings = settings
         val similarityThreshold = activeSettings.similarityThreshold
         val stationaryThreshold = activeSettings.stationaryThreshold
+        val useMaxVote = activeSettings.maxVoteEnabled
 
-        val orderedCurrentRows = enforceTopToBottomOrder(currentRows)
+        val orderedRaw = enforceTopToBottomOrder(currentRows)
+        val orderedCurrentRows = if (useMaxVote) {
+            deduplicateConsecutiveInFrame(orderedRaw, similarityThreshold)
+        } else {
+            orderedRaw
+        }
         val currentNormalizedFrame = normalizeFrameText(orderedCurrentRows)
 
         // Empty frame: keep accumulated output stable without appending
@@ -199,7 +207,7 @@ class ContinuousOcrEngine(
                     previousFrameRowsBeforeAppend = previousFrameRows
                 )
             )
-            accumulatedRows.addAll(orderedCurrentRows)
+            appendRowsWithVotes(orderedCurrentRows)
             previousFrameRows = orderedCurrentRows
             updateStationarySpeedState(
                 currentNormalizedFrame = currentNormalizedFrame,
@@ -217,9 +225,12 @@ class ContinuousOcrEngine(
             )
         }
 
-        // Fast-path stationary guard: identical normalized frame never duplicates text
+        // Fast-path stationary guard: identical normalized frame votes on tail and never duplicates text
         val prevNormalizedFrame = normalizeFrameText(previousFrameRows)
         if (currentNormalizedFrame == prevNormalizedFrame) {
+            if (useMaxVote) {
+                castVotesOnTailSlice(orderedCurrentRows, similarityThreshold)
+            }
             previousFrameRows = orderedCurrentRows
             updateStationarySpeedState(
                 currentNormalizedFrame = currentNormalizedFrame,
@@ -238,13 +249,20 @@ class ContinuousOcrEngine(
         }
 
         // Full-frame suffix-prefix overlap detection against previous observation
-        val overlapRows = detectSuffixPrefixOverlap(
+        var overlapRows = detectSuffixPrefixOverlap(
             previousRows = previousFrameRows,
             currentRows = orderedCurrentRows,
             similarityThreshold = similarityThreshold
         )
 
-        val rowsToAppend = if (overlapRows > 0) {
+        var rowsToAppend = if (overlapRows > 0) {
+            if (useMaxVote) {
+                castVotesOnSuffixOverlap(
+                    overlapCount = overlapRows,
+                    currentRows = orderedCurrentRows,
+                    similarityThreshold = similarityThreshold
+                )
+            }
             orderedCurrentRows.subList(overlapRows, orderedCurrentRows.size)
         } else if (
             isContainedInRecentTail(
@@ -254,10 +272,27 @@ class ContinuousOcrEngine(
                 similarityThreshold = similarityThreshold
             )
         ) {
-            // Stationary frame with transient dropped bottom line(s): do not duplicate
+            if (useMaxVote) {
+                castVotesOnTailSlice(orderedCurrentRows, similarityThreshold)
+            }
             emptyList()
+        } else if (useMaxVote) {
+            // Max Vote Cleanup fallback: align against recent accumulated tail when noisy edges
+            // or upward jitter broke strict suffix-prefix matching, then remove duplicate lines.
+            val (tailMatchedCount, filteredRemaining) = cleanupDuplicatesWithMaxVote(
+                currentRows = orderedCurrentRows,
+                similarityThreshold = similarityThreshold
+            )
+            overlapRows = tailMatchedCount
+            filteredRemaining
         } else {
             orderedCurrentRows
+        }
+
+        if (useMaxVote && rowsToAppend.isNotEmpty()) {
+            rowsToAppend = stripTailDuplicateLinesWithVote(
+                candidateRows = rowsToAppend
+            )
         }
 
         if (rowsToAppend.isNotEmpty()) {
@@ -267,7 +302,7 @@ class ContinuousOcrEngine(
                     previousFrameRowsBeforeAppend = previousFrameRows
                 )
             )
-            accumulatedRows.addAll(rowsToAppend)
+            appendRowsWithVotes(rowsToAppend)
         }
         previousFrameRows = orderedCurrentRows
 
@@ -286,6 +321,304 @@ class ContinuousOcrEngine(
             stabilityCounter = stabilityCounter,
             canUndo = appendHistory.isNotEmpty()
         )
+    }
+
+    private fun appendRowsWithVotes(rows: List<OcrRow>) {
+        for (row in rows) {
+            accumulatedRows.add(row)
+            rowVotes.add(RowVoteBucket(row.originalText))
+        }
+    }
+
+    private fun castVoteAt(index: Int, incomingRow: OcrRow) {
+        if (index !in accumulatedRows.indices || index !in rowVotes.indices) return
+        val winner = rowVotes[index].castVote(incomingRow.originalText)
+        val existing = accumulatedRows[index]
+        if (winner != existing.originalText) {
+            accumulatedRows[index] = existing.copy(
+                originalText = winner,
+                normalizedText = normalizeLineText(winner)
+            )
+        }
+    }
+
+    private fun castVotesOnSuffixOverlap(
+        overlapCount: Int,
+        currentRows: List<OcrRow>,
+        similarityThreshold: Double
+    ) {
+        val accStart = (accumulatedRows.size - overlapCount).coerceAtLeast(0)
+        val count = minOf(overlapCount, accumulatedRows.size - accStart, currentRows.size)
+        for (i in 0 until count) {
+            val accIdx = accStart + i
+            val sim = computeSimilarityWithThreshold(
+                accumulatedRows[accIdx].normalizedText,
+                currentRows[i].normalizedText,
+                similarityThreshold
+            )
+            if (sim >= similarityThreshold) {
+                castVoteAt(accIdx, currentRows[i])
+            }
+        }
+    }
+
+    private fun castVotesOnTailSlice(
+        currentRows: List<OcrRow>,
+        similarityThreshold: Double
+    ) {
+        val tailStart = (accumulatedRows.size - MAX_VOTE_WINDOW).coerceAtLeast(0)
+        for (currRow in currentRows) {
+            if (currRow.normalizedText.length < 4) continue
+            for (idx in accumulatedRows.lastIndex downTo tailStart) {
+                val sim = computeSimilarityWithThreshold(
+                    accumulatedRows[idx].normalizedText,
+                    currRow.normalizedText,
+                    similarityThreshold
+                )
+                if (sim >= similarityThreshold) {
+                    castVoteAt(idx, currRow)
+                    break
+                }
+            }
+        }
+    }
+
+    /**
+     * Collapses consecutive identical or physically overlapping near-identical lines inside
+     * a single frame (e.g. duplicate ML Kit bounding-box detections for the same visual row),
+     * while preserving distinct sequentially ordered rows like "line 1" followed by "line 2".
+     */
+    private fun deduplicateConsecutiveInFrame(
+        rows: List<OcrRow>,
+        similarityThreshold: Double
+    ): List<OcrRow> {
+        if (rows.size <= 1) return rows
+        val result = ArrayList<OcrRow>(rows.size)
+        for (row in rows) {
+            val prev = result.lastOrNull()
+            val isDuplicate = if (prev != null && row.normalizedText.length >= 4) {
+                if (prev.normalizedText == row.normalizedText) {
+                    true
+                } else {
+                    verticalOverlapRatio(prev, row) >= 0.45 &&
+                        !differsOnlyInDigits(prev.normalizedText, row.normalizedText) &&
+                        computeSimilarityWithThreshold(
+                            prev.normalizedText,
+                            row.normalizedText,
+                            similarityThreshold
+                        ) >= similarityThreshold
+                }
+            } else {
+                false
+            }
+
+            if (isDuplicate && prev != null) {
+                if (row.originalText.length > prev.originalText.length) {
+                    result[result.lastIndex] = row
+                }
+            } else {
+                result.add(row)
+            }
+        }
+        return result
+    }
+
+    private fun verticalOverlapRatio(a: OcrRow, b: OcrRow): Double {
+        val heightA = (a.bottom - a.top)
+        val heightB = (b.bottom - b.top)
+        if (heightA <= 0 || heightB <= 0) return 0.0
+        val overlap = minOf(a.bottom, b.bottom) - maxOf(a.top, b.top)
+        if (overlap <= 0) return 0.0
+        return overlap.toDouble() / minOf(heightA, heightB).toDouble()
+    }
+
+    private fun differsOnlyInDigits(a: String, b: String): Boolean {
+        if (a.length != b.length || a == b) return false
+        var sawDigitDiff = false
+        for (i in a.indices) {
+            if (a[i] != b[i]) {
+                if (a[i].isDigit() && b[i].isDigit()) {
+                    sawDigitDiff = true
+                } else {
+                    return false
+                }
+            }
+        }
+        return sawDigitDiff
+    }
+
+    /**
+     * Max-Vote tail-window anchor & duplicate cleanup:
+     * Searches the recent [MAX_VOTE_WINDOW] accumulated rows for a multi-row anchor (>= 2 rows)
+     * or long unique row (>= 10 chars) matching inside [currentRows]. Matched rows cast votes
+     * on their accumulated counterparts; any rows before/within the anchor are discarded as
+     * duplicates, and if the anchor sits well above the bottom of the accumulated document
+     * (upward camera jitter), trailing lines inside that already-scanned range are suppressed.
+     */
+    private fun cleanupDuplicatesWithMaxVote(
+        currentRows: List<OcrRow>,
+        similarityThreshold: Double
+    ): Pair<Int, List<OcrRow>> {
+        val tailStart = (accumulatedRows.size - MAX_VOTE_WINDOW).coerceAtLeast(0)
+        val tailSize = accumulatedRows.size - tailStart
+        if (tailSize <= 0 || currentRows.isEmpty()) return 0 to currentRows
+
+        val rowMin = minOf(similarityThreshold, 0.78)
+
+        // Find the strongest monotonic block match between tail and currentRows
+        var bestAnchorEndAcc = -1
+        var bestAnchorEndCurr = -1
+        var bestMatchCount = 0
+        var bestAvgSim = 0.0
+        var bestMatchedPairs: List<Pair<Int, Int>> = emptyList()
+
+        for (startCurr in currentRows.indices) {
+            for (startTail in (accumulatedRows.lastIndex) downTo tailStart) {
+                val firstSim = lineMatchSimilarity(
+                    accumulatedRows[startTail].normalizedText,
+                    currentRows[startCurr].normalizedText,
+                    rowMin
+                )
+                if (firstSim < rowMin) continue
+
+                val pairs = ArrayList<Pair<Int, Int>>()
+                pairs.add(startTail to startCurr)
+                var sumSim = firstSim
+                var matchedChars = currentRows[startCurr].normalizedText.length
+
+                var ti = startTail + 1
+                var ci = startCurr + 1
+                while (ti < accumulatedRows.size && ci < currentRows.size) {
+                    val directSim = lineMatchSimilarity(
+                        accumulatedRows[ti].normalizedText,
+                        currentRows[ci].normalizedText,
+                        rowMin
+                    )
+                    if (directSim >= rowMin) {
+                        pairs.add(ti to ci)
+                        sumSim += directSim
+                        matchedChars += currentRows[ci].normalizedText.length
+                        ti++
+                        ci++
+                    } else if (ti + 1 < accumulatedRows.size &&
+                        lineMatchSimilarity(accumulatedRows[ti + 1].normalizedText, currentRows[ci].normalizedText, rowMin) >= rowMin
+                    ) {
+                        // Tolerate 1 dropped line in previous tail
+                        ti++
+                    } else if (ci + 1 < currentRows.size &&
+                        lineMatchSimilarity(accumulatedRows[ti].normalizedText, currentRows[ci + 1].normalizedText, rowMin) >= rowMin
+                    ) {
+                        // Tolerate 1 noisy inserted line in current frame
+                        ci++
+                    } else {
+                        break
+                    }
+                }
+
+                val count = pairs.size
+                val avgSim = sumSim / count
+                if (avgSim < similarityThreshold) continue
+
+                val valid = (count >= 2 && matchedChars >= 12) ||
+                    (count >= 3 && matchedChars >= 6) ||
+                    (count == 1 && matchedChars >= 10 && startTail >= accumulatedRows.size - 2)
+                if (!valid) continue
+
+                val isBetter = when {
+                    count >= 2 && bestMatchCount < 2 -> true
+                    count < 2 && bestMatchCount >= 2 -> false
+                    count != bestMatchCount -> count > bestMatchCount
+                    avgSim != bestAvgSim -> avgSim > bestAvgSim
+                    else -> pairs.last().first > bestAnchorEndAcc
+                }
+                if (isBetter) {
+                    bestMatchCount = count
+                    bestAvgSim = avgSim
+                    bestAnchorEndAcc = pairs.last().first
+                    bestAnchorEndCurr = pairs.last().second
+                    bestMatchedPairs = pairs
+                }
+            }
+        }
+
+        if (bestMatchedPairs.isEmpty()) {
+            return 0 to currentRows
+        }
+
+        // Cast votes on every matched accumulated row so cleaner observations win
+        for ((accIdx, currIdx) in bestMatchedPairs) {
+            castVoteAt(accIdx, currentRows[currIdx])
+        }
+
+        val remainingTailRows = (accumulatedRows.size - 1) - bestAnchorEndAcc
+        val trailingCurr = currentRows.subList(bestAnchorEndCurr + 1, currentRows.size)
+
+        // Upward jitter guard: if anchor sits above the document bottom and trailing lines
+        // fit within the already-captured tail below the anchor, append nothing.
+        if (remainingTailRows >= 2 && trailingCurr.size <= remainingTailRows) {
+            return bestMatchCount to emptyList()
+        }
+
+        // If the anchor ended above existing tail rows, strip any trailing lines that already
+        // exist in the remaining accumulated tail below the anchor (and cast votes on them).
+        if (remainingTailRows > 0 && trailingCurr.isNotEmpty()) {
+            val filtered = ArrayList<OcrRow>(trailingCurr.size)
+            val skippedTailStart = bestAnchorEndAcc + 1
+            for (row in trailingCurr) {
+                var matchedTailIdx = -1
+                if (row.normalizedText.length >= 4) {
+                    for (idx in skippedTailStart until accumulatedRows.size) {
+                        val sim = lineMatchSimilarity(
+                            accumulatedRows[idx].normalizedText,
+                            row.normalizedText,
+                            similarityThreshold
+                        )
+                        if (sim >= maxOf(similarityThreshold, 0.85)) {
+                            matchedTailIdx = idx
+                            break
+                        }
+                    }
+                }
+                if (matchedTailIdx != -1) {
+                    castVoteAt(matchedTailIdx, row)
+                } else {
+                    filtered.add(row)
+                }
+            }
+            return bestMatchCount to filtered
+        }
+
+        return bestMatchCount to trailingCurr
+    }
+
+    /**
+     * Strips immediate boundary-adjacent exact duplicate lines (repeated last row)
+     * while casting a vote on the existing row, without touching legitimate repeated
+     * blocks later in a document.
+     */
+    private fun stripTailDuplicateLinesWithVote(
+        candidateRows: List<OcrRow>
+    ): List<OcrRow> {
+        if (candidateRows.isEmpty() || accumulatedRows.isEmpty()) return candidateRows
+
+        val lastAccIdx = accumulatedRows.lastIndex
+        val lastNorm = accumulatedRows[lastAccIdx].normalizedText
+        if (lastNorm.length < 4) return candidateRows
+
+        var startIndex = 0
+        while (startIndex < candidateRows.size && candidateRows[startIndex].normalizedText == lastNorm) {
+            castVoteAt(lastAccIdx, candidateRows[startIndex])
+            startIndex++
+        }
+        return if (startIndex == 0) candidateRows else candidateRows.subList(startIndex, candidateRows.size)
+    }
+
+    private fun lineMatchSimilarity(a: String, b: String, threshold: Double): Double {
+        if (a == b) return 1.0
+        if (a.isEmpty() || b.isEmpty()) return 0.0
+        if (a.length <= 3 && b.length <= 3) return 0.0
+        if (differsOnlyInDigits(a, b)) return 0.0
+        return computeSimilarityWithThreshold(a, b, threshold)
     }
 
     private fun updateStationarySpeedState(
@@ -335,18 +668,12 @@ class ContinuousOcrEngine(
     }
 
     companion object {
-        const val NORMAL_INTERVAL_MS = 100L
-        const val SLOW_INTERVAL_MS = 1000L
         const val DEFAULT_SIMILARITY_THRESHOLD = 0.80
-        const val DEFAULT_STATIONARY_THRESHOLD = 10
+        private const val MAX_VOTE_WINDOW = 60
 
         private val REGEX_MULTI_WHITESPACE = Regex("""[ \t\u00A0\u2007\u202F]+""")
         private val REGEX_LINE_BREAKS = Regex("""\r\n|\r|\n""")
 
-        /**
-         * Extracts individual [Text.Line] objects from ML Kit's TextBlock -> Line hierarchy,
-         * preserving original text and bounding boxes in top-to-bottom row order.
-         */
         fun extractRowsFromVisionText(visionText: Text): List<OcrRow> {
             val extracted = ArrayList<OcrRow>()
             for (block in visionText.textBlocks) {
@@ -371,10 +698,6 @@ class ContinuousOcrEngine(
             return enforceTopToBottomOrder(extracted)
         }
 
-        /**
-         * Orders rows strictly from top to bottom using bounding-box coordinates,
-         * breaking vertical ties left-to-right.
-         */
         fun enforceTopToBottomOrder(rows: List<OcrRow>): List<OcrRow> {
             if (rows.size <= 1) return rows
             return rows.sortedWith(
@@ -384,10 +707,6 @@ class ContinuousOcrEngine(
             )
         }
 
-        /**
-         * Validates that bounding boxes are consistently ordered top-to-bottom
-         * (allowing slight overlap from slanted camera angles).
-         */
         fun validateRowOrdering(rows: List<OcrRow>): Boolean {
             if (rows.size <= 1) return true
             for (i in 1 until rows.size) {
@@ -399,12 +718,6 @@ class ContinuousOcrEngine(
             return true
         }
 
-        /**
-         * Backend-only normalization for a single OCR line.
-         * - Lowercases text
-         * - Normalizes line endings and repeated whitespace
-         * - Preserves all meaningful characters, digits, punctuation, and code operators
-         */
         fun normalizeLineText(rawText: String): String {
             if (rawText.isBlank()) return ""
             val singleLine = REGEX_LINE_BREAKS.replace(rawText, " ")
@@ -413,10 +726,6 @@ class ContinuousOcrEngine(
                 .lowercase(Locale.ROOT)
         }
 
-        /**
-         * Converts an entire frame's OCR rows into a single normalized comparison string
-         * with blank lines removed and uniform `\n` line endings.
-         */
         fun normalizeFrameText(rows: List<OcrRow>): String {
             if (rows.isEmpty()) return ""
             return rows.asSequence()
@@ -425,19 +734,11 @@ class ContinuousOcrEngine(
                 .joinToString("\n")
         }
 
-        /**
-         * Reconstructs the user-visible document strictly from untouched [OcrRow.originalText] rows.
-         */
         fun buildOriginalOutput(rows: List<OcrRow>): String {
             if (rows.isEmpty()) return ""
             return rows.joinToString("\n") { it.originalText }
         }
 
-        /**
-         * Finds the longest valid overlap between the suffix of [previousRows] and the prefix
-         * of [currentRows] using full-frame normalized string comparison at [similarityThreshold]
-         * while mapping cleanly to complete OCR line boundaries.
-         */
         fun detectSuffixPrefixOverlap(
             previousRows: List<OcrRow>,
             currentRows: List<OcrRow>,
@@ -473,8 +774,6 @@ class ContinuousOcrEngine(
                     continue
                 }
 
-                // Boundary-row guard: prevents a long interior match from swallowing
-                // an unrelated leading/trailing row into the overlap.
                 if (k >= 2) {
                     val boundaryMin = minOf(0.55, similarityThreshold * 0.70)
                     val firstRowSim = computeSimilarityWithThreshold(
@@ -492,7 +791,6 @@ class ContinuousOcrEngine(
                     }
                 }
 
-                // Prefer the highest similarity match; keep the longer k on near-ties (<= 2% delta)
                 if (bestK == 0 || fullSimilarity > bestSimilarity + 0.02) {
                     bestK = k
                     bestSimilarity = fullSimilarity
@@ -502,10 +800,6 @@ class ContinuousOcrEngine(
             return bestK
         }
 
-        /**
-         * Avoids very short accidental 1-line collisions (e.g. a lone `"}"` or `"{"`),
-         * while allowing multi-line overlaps (k >= 2) even on short tokens.
-         */
         private fun meetsMinimumOverlapLength(
             rowCount: Int,
             prevSuffixStr: String,
@@ -522,11 +816,6 @@ class ContinuousOcrEngine(
             }
         }
 
-        /**
-         * Checks whether [currentRows] already appears as a contiguous block inside the
-         * recent tail of [accumulatedRows] (handles transient dropped bottom lines on
-         * stationary screens without globally deduplicating legitimate repeated code lines).
-         */
         fun isContainedInRecentTail(
             accumulatedRows: List<OcrRow>,
             currentRows: List<OcrRow>,
@@ -552,20 +841,6 @@ class ContinuousOcrEngine(
             return false
         }
 
-        /**
-         * Computes normalized Levenshtein similarity in [0.0, 1.0].
-         */
-        fun computeSimilarity(a: String, b: String): Double {
-            if (a == b) return 1.0
-            if (a.isEmpty() || b.isEmpty()) return 0.0
-            val maxLen = maxOf(a.length, b.length)
-            val dist = levenshteinDistance(a, b)
-            return 1.0 - (dist.toDouble() / maxLen.toDouble())
-        }
-
-        /**
-         * Bounded Levenshtein distance using O(min(N, M)) space.
-         */
         fun computeSimilarityWithThreshold(
             a: String,
             b: String,
@@ -583,31 +858,10 @@ class ContinuousOcrEngine(
             return 1.0 - (dist.toDouble() / maxLen.toDouble())
         }
 
-        private fun levenshteinDistance(s1: String, s2: String): Int {
-            val (short, long) = if (s1.length <= s2.length) s1 to s2 else s2 to s1
-            val prev = IntArray(short.length + 1) { it }
-            val curr = IntArray(short.length + 1)
-
-            for (i in 1..long.length) {
-                curr[0] = i
-                val longChar = long[i - 1]
-                for (j in 1..short.length) {
-                    val cost = if (longChar == short[j - 1]) 0 else 1
-                    curr[j] = minOf(
-                        curr[j - 1] + 1,
-                        prev[j] + 1,
-                        prev[j - 1] + cost
-                    )
-                }
-                curr.copyInto(prev)
-            }
-            return prev[short.length]
-        }
-
         private fun levenshteinDistanceBounded(s1: String, s2: String, maxDistance: Int): Int {
             val (short, long) = if (s1.length <= s2.length) s1 to s2 else s2 to s1
-            val prev = IntArray(short.length + 1) { it }
-            val curr = IntArray(short.length + 1)
+            var prev = IntArray(short.length + 1) { it }
+            var curr = IntArray(short.length + 1)
 
             for (i in 1..long.length) {
                 curr[0] = i
@@ -624,7 +878,9 @@ class ContinuousOcrEngine(
                     if (value < rowMin) rowMin = value
                 }
                 if (rowMin > maxDistance) return maxDistance + 1
-                curr.copyInto(prev)
+                val tmp = prev
+                prev = curr
+                curr = tmp
             }
             return prev[short.length]
         }
